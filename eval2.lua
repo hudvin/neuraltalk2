@@ -6,7 +6,8 @@ require 'loadcaffe'
 -- local imports
 local utils = require 'misc.utils'
 require 'misc.DataLoader'
-require 'misc.DataLoaderRaw'
+require 'misc.DataLoaderStub'
+
 require 'misc.LanguageModel'
 local net_utils = require 'misc.net_utils'
 
@@ -51,6 +52,10 @@ cmd:text()
 -- Basic Torch initializations
 -------------------------------------------------------------------------------
 local opt = cmd:parse(arg)
+
+opt.image_folder = "images/"
+opt.model = "/home/kontiki/Downloads/neuraltalk2/model_id1-501-1448236541.t7"
+
 torch.manualSeed(opt.seed)
 torch.setdefaulttensortype('torch.FloatTensor') -- for CPU
 
@@ -80,12 +85,7 @@ local vocab = checkpoint.vocab -- ix -> word mapping
 -------------------------------------------------------------------------------
 -- Create the Data Loader instance
 -------------------------------------------------------------------------------
-local loader
-if string.len(opt.image_folder) == 0 then
-  loader = DataLoader{h5_file = opt.input_h5, json_file = opt.input_json}
-else
-  loader = DataLoaderRaw{folder_path = opt.image_folder, coco_json = opt.coco_json}
-end
+loader = DataLoaderStub("images/1.jpg")
 
 -------------------------------------------------------------------------------
 -- Load the networks from model checkpoint
@@ -105,7 +105,6 @@ local function eval_split(split, evalopt)
 
   protos.cnn:evaluate()
   protos.lm:evaluate()
-  loader:resetIterator(split) -- rewind iteator back to first datapoint in the split
   local n = 0
   local loss_sum = 0
   local loss_evals = 0
@@ -113,7 +112,7 @@ local function eval_split(split, evalopt)
   while true do
 
     -- fetch a batch of data
-    local data = loader:getBatch{batch_size = opt.batch_size, split = split, seq_per_img = opt.seq_per_img}
+    local data = loader:getBatch()
     data.images = net_utils.prepro(data.images, false, opt.gpuid >= 0) -- preprocess in place, and don't augment
     n = n + data.images:size(1)
 
@@ -140,12 +139,6 @@ local function eval_split(split, evalopt)
         entry.file_name = data.infos[k].file_path
       end
       table.insert(predictions, entry)
-      if opt.dump_images == 1 then
-        -- dump the raw image to vis/ folder
-        local cmd = 'cp "' .. path.join(opt.image_root, data.infos[k].file_path) .. '" vis/imgs/img' .. #predictions .. '.jpg' -- bit gross
-        print(cmd)
-        os.execute(cmd) -- dont think there is cleaner way in Lua
-      end
       if verbose then
         print(string.format('image %s: %s', entry.image_id, entry.caption))
       end
@@ -174,9 +167,4 @@ local loss, split_predictions, lang_stats = eval_split(opt.split, {num_images = 
 print('loss: ', loss)
 if lang_stats then
   print(lang_stats)
-end
-
-if opt.dump_json == 1 then
-  -- dump the json
-  utils.write_json('vis/vis.json', split_predictions)
 end
