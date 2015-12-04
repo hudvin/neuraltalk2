@@ -80,8 +80,11 @@ function NTPPrototype:process(image_data)
 end
 
 function NTPPrototype:get_label(image_path)
+  print("g1")
   local image_data = self:load_image(image_path)
+  print("g2")
   local caption = self:process(image_data)
+  print("g3")
   return caption
 end
 
