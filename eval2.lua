@@ -15,32 +15,17 @@ local net_utils = require 'misc.net_utils'
 -- Input arguments and options
 -------------------------------------------------------------------------------
 cmd = torch.CmdLine()
-cmd:text()
-cmd:text('Train an Image Captioning model')
-cmd:text()
-cmd:text('Options')
-
--- Input paths
 cmd:option('-model','','path to model to evaluate')
 -- Basic options
-cmd:option('-batch_size', 1, 'if > 0 then overrule, otherwise load from checkpoint.')
-cmd:option('-num_images', 100, 'how many images to use when periodically evaluating the loss? (-1 = all)')
 cmd:option('-language_eval', 0, 'Evaluate language as well (1 = yes, 0 = no)? BLEU/CIDEr/METEOR/ROUGE_L? requires coco-caption code from Github.')
-cmd:option('-dump_images', 1, 'Dump images into vis/imgs folder for vis? (1=yes,0=no)')
-cmd:option('-dump_json', 1, 'Dump json with predictions into vis folder? (1=yes,0=no)')
-cmd:option('-dump_path', 0, 'Write image paths along with predictions into vis json? (1=yes,0=no)')
 -- Sampling options
 cmd:option('-sample_max', 1, '1 = sample argmax words. 0 = sample from distributions.')
 cmd:option('-beam_size', 2, 'used when sample_max = 1, indicates number of beams in beam search. Usually 2 or 3 works well. More is not better. Set this to 1 for faster runtime but a bit worse performance.')
 cmd:option('-temperature', 1.0, 'temperature when sampling from distributions (i.e. when sample_max = 0). Lower = "safer" predictions.')
 -- For evaluation on a folder of images:
-cmd:option('-image_folder', '', 'If this is nonempty then will predict on the images in this folder path')
-cmd:option('-image_root', '', 'In case the image paths have to be preprended with a root path to an image folder')
 -- For evaluation on MSCOCO images from some split:
 cmd:option('-input_h5','','path to the h5file containing the preprocessed dataset. empty = fetch from model checkpoint.')
 cmd:option('-input_json','','path to the json file containing additional info and vocab. empty = fetch from model checkpoint.')
-cmd:option('-split', 'test', 'if running on MSCOCO images, which split to use: val|test|train')
-cmd:option('-coco_json', '', 'if nonempty then use this file in DataLoaderRaw (see docs there). Used only in MSCOCO test evaluation, where we have a specific json file of only test set images.')
 -- misc
 cmd:option('-backend', 'cudnn', 'nn|cudnn')
 cmd:option('-id', 'evalscript', 'an id identifying this run/job. used only if language_eval = 1 for appending to intermediate files')
@@ -53,7 +38,6 @@ cmd:text()
 -------------------------------------------------------------------------------
 local opt = cmd:parse(arg)
 
-opt.image_folder = "images/"
 opt.model = "/home/kontiki/Downloads/neuraltalk2/model_id1-501-1448236541.t7"
 
 torch.manualSeed(opt.seed)
@@ -82,10 +66,6 @@ for k,v in pairs(fetch) do
 end
 local vocab = checkpoint.vocab -- ix -> word mapping
 
--------------------------------------------------------------------------------
--- Create the Data Loader instance
--------------------------------------------------------------------------------
-loader = DataLoaderStub("images/1.jpg")
 
 -------------------------------------------------------------------------------
 -- Load the networks from model checkpoint
@@ -96,75 +76,51 @@ protos.crit = nn.LanguageModelCriterion()
 protos.lm:createClones() -- reconstruct clones inside the language model
 if opt.gpuid >= 0 then for k,v in pairs(protos) do v:cuda() end end
 
+
 -------------------------------------------------------------------------------
 -- Evaluation fun(ction)
 -------------------------------------------------------------------------------
-local function eval_split(split, evalopt)
-  local verbose = utils.getopt(evalopt, 'verbose', true)
-  local num_images = utils.getopt(evalopt, 'num_images', true)
-
+function process(image_data)
   protos.cnn:evaluate()
   protos.lm:evaluate()
-  local n = 0
-  local loss_sum = 0
-  local loss_evals = 0
-  local predictions = {}
-  while true do
-
-    -- fetch a batch of data
-    local data = loader:getBatch()
-    data.images = net_utils.prepro(data.images, false, opt.gpuid >= 0) -- preprocess in place, and don't augment
-    n = n + data.images:size(1)
-
-    -- forward the model to get loss
-    local feats = protos.cnn:forward(data.images)
-
-    -- evaluate loss if we have the labels
-    local loss = 0
-    if data.labels then
-      local expanded_feats = protos.expander:forward(feats)
-      local logprobs = protos.lm:forward{expanded_feats, data.labels}
-      loss = protos.crit:forward(logprobs, data.labels)
-      loss_sum = loss_sum + loss
-      loss_evals = loss_evals + 1
-    end
-
-    -- forward the model to also get generated samples for each image
-    local sample_opts = { sample_max = opt.sample_max, beam_size = opt.beam_size, temperature = opt.temperature }
-    local seq = protos.lm:sample(feats, sample_opts)
-    local sents = net_utils.decode_sequence(vocab, seq)
-    for k=1,#sents do
-      local entry = {image_id = data.infos[k].id, caption = sents[k]}
-      if opt.dump_path == 1 then
-        entry.file_name = data.infos[k].file_path
-      end
-      table.insert(predictions, entry)
-      if verbose then
-        print(string.format('image %s: %s', entry.image_id, entry.caption))
-      end
-    end
-
-    -- if we wrapped around the split or used up val imgs budget then bail
-    local ix0 = data.bounds.it_pos_now
-    local ix1 = math.min(data.bounds.it_max, num_images)
-    if verbose then
-      print(string.format('evaluating performance... %d/%d (%f)', ix0-1, ix1, loss))
-    end
-
-    if data.bounds.wrapped then break end -- the split ran out of data, lets break out
-    if num_images >= 0 and n >= num_images then break end -- we've used enough images
-  end
-
-  local lang_stats
-  if opt.language_eval == 1 then
-    lang_stats = net_utils.language_eval(predictions, opt.id)
-  end
-
-  return loss_sum/loss_evals, predictions, lang_stats
+  -- fetch a batch of data
+  local data = image_data
+  data.images = net_utils.prepro(data.images, false, opt.gpuid >= 0) -- preprocess in place, and don't augment
+  -- forward the model to get loss
+  local feats = protos.cnn:forward(data.images)
+  -- forward the model to also get generated samples for each image
+  local sample_opts = { sample_max = opt.sample_max, beam_size = opt.beam_size, temperature = opt.temperature }
+  local seq = protos.lm:sample(feats, sample_opts)
+  local sents = net_utils.decode_sequence(vocab, seq)
+  local entry = {image_id = data.infos[1].id, caption = sents[1]}
+  return entry.caption
 end
 
-local loss, split_predictions, lang_stats = eval_split(opt.split, {num_images = opt.num_images})
-print('loss: ', loss)
-if lang_stats then
-  print(lang_stats)
+
+function get_label(image_path)
+  local image_data = load_image(image_path)
+  local caption = process(image_data)
+  return caption
 end
+
+
+local function isImage(f)
+  local supportedExt = {'.jpg','.JPEG','.JPG','.png','.PNG','.ppm','.PPM'}
+  for _,ext in pairs(supportedExt) do
+    local _, end_idx =  f:find(ext)
+    if end_idx and end_idx == f:len() then
+      return true
+    end
+  end
+ return false
+end
+
+root_dir = "images/"
+for file in paths.files(root_dir) do
+  if isImage(file) then
+    full_path = root_dir ..  file
+    caption = get_label(full_path)
+    print(caption .. " for " .. full_path)
+  end	
+end
+
