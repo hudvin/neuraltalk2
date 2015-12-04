@@ -5,40 +5,38 @@ require 'nngraph'
 require 'loadcaffe'
 -- local imports
 local utils = require 'misc.utils'
-require 'misc.DataLoader'
 require 'misc.DataLoaderStub'
 
 require 'misc.LanguageModel'
+
+
+local NTPPrototype = torch.class('NTP')
+
+function NTPPrototype:__init()
+ print('dddd')
+end
+
+local ntp = NTP()
+
+
 local net_utils = require 'misc.net_utils'
 
--------------------------------------------------------------------------------
--- Input arguments and options
--------------------------------------------------------------------------------
 cmd = torch.CmdLine()
-cmd:option('-model','','path to model to evaluate')
 -- Basic options
 cmd:option('-language_eval', 0, 'Evaluate language as well (1 = yes, 0 = no)? BLEU/CIDEr/METEOR/ROUGE_L? requires coco-caption code from Github.')
 -- Sampling options
 cmd:option('-sample_max', 1, '1 = sample argmax words. 0 = sample from distributions.')
 cmd:option('-beam_size', 2, 'used when sample_max = 1, indicates number of beams in beam search. Usually 2 or 3 works well. More is not better. Set this to 1 for faster runtime but a bit worse performance.')
 cmd:option('-temperature', 1.0, 'temperature when sampling from distributions (i.e. when sample_max = 0). Lower = "safer" predictions.')
--- For evaluation on a folder of images:
--- For evaluation on MSCOCO images from some split:
-cmd:option('-input_h5','','path to the h5file containing the preprocessed dataset. empty = fetch from model checkpoint.')
-cmd:option('-input_json','','path to the json file containing additional info and vocab. empty = fetch from model checkpoint.')
--- misc
 cmd:option('-backend', 'cudnn', 'nn|cudnn')
 cmd:option('-id', 'evalscript', 'an id identifying this run/job. used only if language_eval = 1 for appending to intermediate files')
 cmd:option('-seed', 123, 'random number generator seed to use')
 cmd:option('-gpuid', 0, 'which gpu to use. -1 = use CPU')
 cmd:text()
 
--------------------------------------------------------------------------------
--- Basic Torch initializations
--------------------------------------------------------------------------------
 local opt = cmd:parse(arg)
 
-opt.model = "/home/kontiki/Downloads/neuraltalk2/model_id1-501-1448236541.t7"
+model = "/home/kontiki/Downloads/neuraltalk2/model_id1-501-1448236541.t7"
 
 torch.manualSeed(opt.seed)
 torch.setdefaulttensortype('torch.FloatTensor') -- for CPU
@@ -51,15 +49,7 @@ if opt.gpuid >= 0 then
   cutorch.setDevice(opt.gpuid + 1) -- note +1 because lua is 1-indexed
 end
 
--------------------------------------------------------------------------------
--- Load the model checkpoint to evaluate
--------------------------------------------------------------------------------
-assert(string.len(opt.model) > 0, 'must provide a model')
-local checkpoint = torch.load(opt.model)
--- override and collect parameters
-if string.len(opt.input_h5) == 0 then opt.input_h5 = checkpoint.opt.input_h5 end
-if string.len(opt.input_json) == 0 then opt.input_json = checkpoint.opt.input_json end
-if opt.batch_size == 0 then opt.batch_size = checkpoint.opt.batch_size end
+local checkpoint = torch.load(model)
 local fetch = {'rnn_size', 'input_encoding_size', 'drop_prob_lm', 'cnn_proto', 'cnn_model', 'seq_per_img'}
 for k,v in pairs(fetch) do 
   opt[v] = checkpoint.opt[v] -- copy over options from model
@@ -77,9 +67,6 @@ protos.lm:createClones() -- reconstruct clones inside the language model
 if opt.gpuid >= 0 then for k,v in pairs(protos) do v:cuda() end end
 
 
--------------------------------------------------------------------------------
--- Evaluation fun(ction)
--------------------------------------------------------------------------------
 function process(image_data)
   protos.cnn:evaluate()
   protos.lm:evaluate()
